@@ -137,6 +137,16 @@ class Window(QWidget):
         form.addRow("Low battery", row)
         root.addWidget(self.power_box)
 
+        # --- connection -----------------------------------------------------
+        self.conn_box = QGroupBox("Connection")
+        form = QFormLayout(self.conn_box)
+        self.quality = QComboBox()
+        self.quality.addItems(["Fast", "High"])
+        self.quality.setToolTip("Fast favors lower latency; High favors link quality")
+        self.quality.currentIndexChanged.connect(self.apply_quality)
+        form.addRow("2.4 GHz quality", self.quality)
+        root.addWidget(self.conn_box)
+
         # --- microphone -----------------------------------------------------
         box = QGroupBox("Microphone")
         col = QVBoxLayout(box)
@@ -182,6 +192,7 @@ class Window(QWidget):
             self.bright.setValue(50)
         self.sidetone.setChecked(bool(saved.get("sidetone")))
         self.echo.setChecked(bool(saved.get("echo_cancel")))
+        self.quality.setCurrentIndex(0 if saved.get("quality") == "fast" else 1)
         self.update_lighting_widgets()
 
         self.load_power()
@@ -235,6 +246,9 @@ class Window(QWidget):
         if s.get("charging"):
             parts.append("charging")
         self.status.setText(", ".join(parts) or "unknown")
+        self.conn_box.setEnabled(mode == "2.4GHz")
+        self.conn_box.setTitle("Connection" if mode == "2.4GHz"
+                               else "Connection (2.4 GHz only)")
 
         # Follow wake/sleep while the window is open.
         if s.get("awake") and self.power is None and not self.loading:
@@ -297,6 +311,14 @@ class Window(QWidget):
         else:
             self.power = want
             self.msg.clear()
+
+    # ---- connection ---------------------------------------------------------
+    def apply_quality(self):
+        if self.loading:
+            return
+        mode = "fast" if self.quality.currentIndex() == 0 else "high"
+        err = run(ctl.write_quality, mode)
+        self.msg.setText(err or "")
 
     # ---- microphone ---------------------------------------------------------
     def mic_cmd(self, payload, **saved):
