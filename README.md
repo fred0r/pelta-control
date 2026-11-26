@@ -148,6 +148,12 @@ Nothing in the tools is Arch-specific. The installer detects your package manage
 - **`~/.local/bin` not in PATH:** Debian and Ubuntu only add it at login if the folder already exists, so on a new account you may need to log out and back in once after installing.
 - **PulseAudio instead of PipeWire:** the tools should work, but the wake bug and fix have only been tested with PipeWire.
 
+## ASUS Gear Link
+
+ASUS's web app [Gear Link](https://gearlink.asus.com/en) can also configure the Pelta and shows its firmware version. It works on Linux in Chromium-based browsers (Edge, Chrome and similar; tested in Edge on CachyOS), but not in Firefox, which doesn't support WebHID. The browser needs read/write access to the headset's HID device, which the udev rule from this project provides.
+
+Settings changed in Gear Link aren't seen by `pelta-ctl` or the settings window, which show the last values *they* set. Gear Link's firmware update downloads a Windows tool (`ROG Firmware Update Tool.exe`), so firmware updates still need Windows.
+
 ## Troubleshooting
 
 **`/dev/pelta-hid-dongle` (or `-usb`) doesn't exist.** Make sure the dongle (or the headset's USB-C cable) is plugged in and check that the rule matches it:
