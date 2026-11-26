@@ -5,6 +5,7 @@ import json, os, select, subprocess, time
 # since the headset is then talking to the computer directly.
 DEVICES = [("/dev/pelta-hid-usb", "USB"), ("/dev/pelta-hid-dongle", "2.4GHz")]
 RECHECK = 3        # seconds between checks for a connection change
+RECOVER_GAP = 5    # one wake can be seen twice (push + poll); fix the volume once
 RECOVER = os.path.expanduser("~/.local/bin/pelta-recover")
 STATE_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "pelta.json")
 CACHE_FILE = os.path.expanduser("~/.cache/pelta-battery")
@@ -17,6 +18,11 @@ LOW_DEFAULT = 15  # used until the headset reports its own alert level
 #                     byte 8: spoken low-battery warning on/off
 # A sleeping headset answers everything with "ff aa".
 QUERIES = [bytes.fromhex(h) for h in ("cc12000001", "cc1208", "cc1207")]
+# Asked every few seconds on the dongle: switching the headset off and on (or
+# through USB mode) sends no report, but the dongle answers this with 00 while
+# the headset is off and 01 once it's back.
+POLL = bytes.fromhex("cc12000001") + bytes(59)
+last_recover = 0.0
 
 state = {"battery": None, "live": False, "charging": None, "awake": None,
          "alert": LOW_DEFAULT, "mode": None}
@@ -62,19 +68,32 @@ def set_battery(value):
         notify("Headset fully charged", "100%")
 
 
+def headset_back(fd, why):
+    """The headset just woke or reconnected: it's at max volume, so fix it."""
+    global last_recover
+    was = state["awake"]
+    state["awake"] = True
+    save()
+    if was is True or time.time() - last_recover < RECOVER_GAP:
+        return
+    print(why, flush=True)
+    last_recover = time.time()
+    subprocess.run([RECOVER])
+    query(fd)                              # refresh battery and charging too
+
+
 def handle(r, fd):
     if len(r) < 8 or r[0] != 0xCC or r[1] != 0x12:
         return
     kind, value = r[2], r[5]
 
     if kind == 0x0E:                       # wake / sleep (pushed by headset)
-        awake = r[3:8] == bytes(5)
-        state["awake"] = awake
-        save()
-        if awake:
-            print("Wake detected", flush=True)
-            subprocess.run([RECOVER])
-            query(fd)                      # refresh charging state too
+        if r[3:8] == bytes(5):
+            state["awake"] = False         # force the fix even if a poll got here first
+            headset_back(fd, "Wake detected")
+        else:
+            state["awake"] = False
+            save()
         return
 
     if r[5:7] == b"\xff\xaa":              # headset asleep / unreachable
@@ -85,10 +104,10 @@ def handle(r, fd):
         # is 0 followed by other data, and the headset is always reachable,
         # so only an all-zero reply means asleep.
         if value == 1:
-            state["awake"] = True
+            headset_back(fd, "Headset connected")
         elif not any(r[6:16]):
             state["awake"] = False
-        save()
+            save()
 
     elif kind == 0x09:                     # battery % (pushed)
         set_battery(value)
@@ -133,15 +152,21 @@ while True:
     print(f"Listening on {dev} ({mode})", flush=True)
     try:
         query(fd)                          # get real values for this connection
+        next_check = time.time() + RECHECK
         while True:
-            if select.select([fd], [], [], RECHECK)[0]:
+            if select.select([fd], [], [], max(0, next_check - time.time()))[0]:
                 r = os.read(fd, 256)
                 if not r:
                     break
                 handle(r, fd)
-            elif find_device()[0] != dev:  # the other connection appeared
+            if time.time() < next_check:
+                continue
+            next_check = time.time() + RECHECK
+            if find_device()[0] != dev:    # the other connection appeared
                 print("Connection changed", flush=True)
                 break
+            if mode == "2.4GHz":
+                os.write(fd, POLL)         # catch the headset being switched off/on
     except OSError:
         print("Device removed", flush=True)
     finally:

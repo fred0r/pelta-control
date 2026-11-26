@@ -203,6 +203,8 @@ Switching PipeWire to software volume (`api.alsa.soft-mixer`) avoids the bug, bu
 
 The dongle reports headset events as HID input reports on its vendor interface (interface 3, report ID `0xCC`). The headset has the same interface when connected by cable. The daemon reads that device directly, which needs no root, no usbmon and no polling. The udev rule gives that interface a fixed name, so it doesn't matter which `hidrawN` number or USB port it gets.
 
+Switching the headset off and on (or through USB mode and back) also resets it to max volume, but sends no report. So while it's on the dongle, the daemon asks the dongle every 3 seconds whether the headset is connected (`cc 12 00 00 01`, answered by the dongle itself) and runs the volume fix when the answer changes from "not connected" to "connected".
+
 ### Protocol
 
 Everything goes through report ID `0xCC`, 64 bytes, in both directions. Commands from the computer are HID output reports (`SET_REPORT`). Byte 1 is the command (`12` get, `51` set, `41` audio set, `61` audio level set), byte 2 the setting, bytes 3–4 an index, and data starts at byte 5. These were worked out from the dongle's HID descriptor and USB captures of Armoury Crate, and confirmed against the command table in ASUS Gear Link.
