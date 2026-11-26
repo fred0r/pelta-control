@@ -13,7 +13,8 @@ LOW_DEFAULT = 15  # used until the headset reports its own alert level
 # Status queries Armoury Crate sends. Replies arrive as normal reports:
 #   cc 12 00 00 01 -> byte 5: 1 = headset connected
 #   cc 12 08       -> byte 5: 1 = charging
-#   cc 12 07       -> byte 5: sleep timer, byte 6: battery %, 7-8: alert settings
+#   cc 12 07       -> byte 5: sleep timer, byte 6: battery %, byte 7: alert % (0 = off),
+#                     byte 8: spoken low-battery warning on/off
 # A sleeping headset answers everything with "ff aa".
 QUERIES = [bytes.fromhex(h) for h in ("cc12000001", "cc1208", "cc1207")]
 
@@ -94,7 +95,7 @@ def handle(r, fd):
 
     elif kind == 0x07:                     # settings reply, battery in byte 6
         state["awake"] = True               # it answered, so it's awake
-        state["alert"] = r[7] if r[8] == 1 else None
+        state["alert"] = r[7] or None       # 0 = alert off; r[8] is the voice warning
         set_battery(r[6])
 
     elif kind == 0x08:                     # charging (pushed or reply)
