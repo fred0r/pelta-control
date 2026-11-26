@@ -23,6 +23,9 @@ QUERIES = [bytes.fromhex(h) for h in ("cc12000001", "cc1208", "cc1207")]
 # the headset is off and 01 once it's back.
 POLL = bytes.fromhex("cc12000001") + bytes(59)
 last_recover = 0.0
+# After a sleep report the dongle keeps answering "connected" for a moment
+# until the link drops; ignore that until it has said "not connected" once.
+going_down = False
 
 state = {"battery": None, "live": False, "charging": None, "awake": None,
          "alert": LOW_DEFAULT, "mode": None}
@@ -83,17 +86,21 @@ def headset_back(fd, why):
 
 
 def handle(r, fd):
+    global going_down
     if len(r) < 8 or r[0] != 0xCC or r[1] != 0x12:
         return
     kind, value = r[2], r[5]
 
     if kind == 0x0E:                       # wake / sleep (pushed by headset)
         if r[3:8] == bytes(5):
+            going_down = False
             state["awake"] = False         # force the fix even if a poll got here first
             headset_back(fd, "Wake detected")
         else:
+            going_down = True
             state["awake"] = False
             save()
+            print("Headset asleep", flush=True)
         return
 
     if r[5:7] == b"\xff\xaa":              # headset asleep / unreachable
@@ -104,8 +111,12 @@ def handle(r, fd):
         # is 0 followed by other data, and the headset is always reachable,
         # so only an all-zero reply means asleep.
         if value == 1:
-            headset_back(fd, "Headset connected")
+            if not going_down:             # still the old link, not a reconnect
+                headset_back(fd, "Headset connected")
         elif not any(r[6:16]):
+            if going_down or state["awake"] is not False:
+                print("Headset off or asleep", flush=True)
+            going_down = False
             state["awake"] = False
             save()
 
