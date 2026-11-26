@@ -51,11 +51,6 @@ def set_battery(value):
         print("Ignoring battery value", value, flush=True)
         return
     old = state["battery"] if state["live"] else None
-    if old is not None:
-        if value > old:
-            state["charging"] = True
-        elif value < old:
-            state["charging"] = False
     state["battery"], state["live"] = value, True
     save()
     print(f"Battery {value}%", flush=True)
@@ -121,6 +116,7 @@ while True:
     if dev is None:
         if state["mode"] is not None:
             state["mode"], state["awake"], state["live"] = None, None, False
+            state["charging"] = None
             save()
             print("Headset disconnected, waiting", flush=True)
         time.sleep(RECHECK)
@@ -131,6 +127,7 @@ while True:
         time.sleep(RECHECK)
         continue
     state["mode"], state["awake"] = mode, None
+    state["charging"] = None
     save()
     print(f"Listening on {dev} ({mode})", flush=True)
     try:
