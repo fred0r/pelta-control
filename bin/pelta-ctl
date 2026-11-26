@@ -12,6 +12,10 @@ SAVED = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.co
                      "pelta", "settings.json")
 
 MODES = {"static": 1, "breathing": 2, "strobing": 3, "cycle": 4}
+QUALITY = {"fast": 0x28, "high": 0x64}
+
+# Connection Priority/2.4GHz quality is a dongle setting; never send it over USB-C.
+DONGLE = "/dev/pelta-hid-dongle"
 
 # Armoury Crate also sends cc 41 03 00 00 <0/1> and cc 41 04 00 00 <10 bands>
 # for its EQ presets, but neither had any audible effect on Linux, so they
@@ -33,13 +37,23 @@ def device():
     return path
 
 
-def send(payload):
+def dongle():
+    if not os.path.exists(DONGLE):
+        sys.exit("pelta-ctl: 2.4GHz dongle not found (plug in the dongle)")
+    return DONGLE
+
+
+def send_to(path, payload):
     pkt = bytes(payload) + bytes(64 - len(payload))
-    fd = os.open(device(), os.O_RDWR)
+    fd = os.open(path, os.O_RDWR)
     try:
         os.write(fd, pkt)
     finally:
         os.close(fd)
+
+
+def send(payload):
+    send_to(device(), payload)
 
 
 def read_settings():
@@ -69,6 +83,30 @@ def write_power(sleep_min, alert_pct, alert_on):
     got = read_settings()
     if (got[0], got[2], got[3]) != (sleep_min, alert_pct, alert_on):
         sys.exit(f"pelta-ctl: headset did not accept it (now reports {got})")
+
+
+def write_quality(mode):
+    """Set the 2.4GHz link quality; the dongle ACKs but does not echo the value."""
+    path = dongle()
+    fd = os.open(path, os.O_RDWR)
+    try:
+        while select.select([fd], [], [], 0)[0]:
+            os.read(fd, 256)
+        payload = [0xCC, 0x51, 0x52, 0, 0, QUALITY[mode]]
+        os.write(fd, bytes(payload) + bytes(64 - len(payload)))
+        end = time.time() + 1
+        while (left := end - time.time()) > 0:
+            if not select.select([fd], [], [], left)[0]:
+                break
+            r = os.read(fd, 256)
+            if r[:3] == b"\xcc\x51\x52":
+                if r[5:7] == b"\xff\xaa":
+                    sys.exit("pelta-ctl: dongle did not accept it; wake the headset and retry")
+                remember(quality=mode)
+                return
+    finally:
+        os.close(fd)
+    sys.exit("pelta-ctl: no reply from the dongle; wake the headset and retry")
 
 
 def load_saved():
@@ -149,6 +187,10 @@ def main():
 
     sub.add_parser("status", help="show battery and settings")
 
+    q = sub.add_parser("quality", aliases=["latency"],
+                       help="2.4GHz quality (fast = lower latency, high = higher quality)")
+    q.add_argument("mode", choices=["fast", "high", "status"])
+
     t = sub.add_parser("sidetone", help="hear your own mic")
     t.add_argument("state", type=on_off)
 
@@ -191,6 +233,13 @@ def main():
         print(f"lighting    {rgb or 'unknown'}")
         print(f"sidetone    {onoff(saved.get('sidetone'))}")
         print(f"echo cancel {onoff(saved.get('echo_cancel'))}")
+        print(f"quality     {saved.get('quality') or 'unknown'}")
+    elif a.cmd in ("quality", "latency"):
+        if a.mode == "status":
+            print(f"2.4GHz quality {load_saved().get('quality') or 'unknown'} "
+                  "(last set with pelta-ctl)")
+        else:
+            write_quality(a.mode)
     elif a.cmd == "colors":
         for n, h in COLORS.items():
             print(f"{n:<8} {h}")

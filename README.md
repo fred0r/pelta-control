@@ -4,7 +4,7 @@ Linux tools for the **ASUS ROG Pelta** wireless headset, used with its 2.4 GHz U
 
 - **Fixes the volume bug.** On Linux the headset wakes from sleep at max volume no matter what the system volume is. A small background service catches every wake and puts the volume back.
 - **Battery in the system tray**, with a charging indicator, a low-battery notification and a "fully charged" notification.
-- **Settings without Armoury Crate**: RGB lighting, auto-sleep timer, low-battery warning level, sidetone and echo cancellation, from a settings window or the command line.
+- **Settings without Armoury Crate**: RGB lighting, auto-sleep timer, low-battery warning level, sidetone, echo cancellation and 2.4 GHz link quality, from a settings window or the command line.
 
 Everything runs as your normal user. Root is only needed once, to install a udev rule.
 
@@ -47,6 +47,7 @@ The tray icon shows the battery level in steps of 10%, with a plug badge while c
 | Headset | Battery level and status (awake, asleep, charging) |
 | Lighting | Mode (static, breathing, strobing, color cycle, off), color picker or preset swatches, brightness |
 | Power | Auto-sleep timer and low-battery warning level. Read from the headset each time the window opens, so it's greyed out while the headset is asleep |
+| Connection | 2.4 GHz link quality: **Fast** for lower latency, **High** for higher quality. Only available with the dongle |
 | Microphone | Sidetone (hear your own voice) and echo cancellation |
 
 Changes are sent to the headset as you make them. Closing the window hides it; the tray icon keeps running. If you quit the tray app, start it again from **ROG Pelta** in the app launcher.
@@ -71,6 +72,10 @@ pelta-ctl alert off
 
 pelta-ctl sidetone on                 # on / off
 pelta-ctl echo-cancel on              # on / off
+
+pelta-ctl quality fast                # 2.4 GHz quality: fast (lower latency) or high (higher quality)
+pelta-ctl latency fast                # alias for quality
+pelta-ctl quality status              # last value set with pelta-ctl
 ```
 
 **Color names:** red, orange, amber, yellow, lime, green, mint, cyan, sky, blue, purple, violet, magenta, pink, white. They aren't case-sensitive. Some are adjusted for LEDs, which make mixed colors look more yellow than a screen does (orange is `ff4000`, for example).
@@ -81,7 +86,7 @@ pelta-ctl echo-cancel on              # on / off
 
 ### What `status` can and can't read
 
-The headset reports its **battery level, charging state, sleep timer and low-battery alert** when asked. It has no way to report **lighting, sidetone or echo cancellation**, so `pelta-ctl` and the settings window remember the last values you set in `~/.config/pelta/settings.json`. Those will be wrong if something else changes the headset (Armoury Crate on another PC, for example).
+The headset reports its **battery level, charging state, sleep timer and low-battery alert** when asked. It has no way to report **lighting, sidetone, echo cancellation or 2.4 GHz quality**, so `pelta-ctl` and the settings window remember the last values you set in `~/.config/pelta/settings.json`. Those will be wrong if something else changes the headset (Armoury Crate on another PC, for example).
 
 ### Battery and notifications
 
@@ -98,6 +103,8 @@ With the headset plugged in by cable, it shows up as its own USB device (`0b05:1
 
 Each connection gets its own device: `/dev/pelta-hid-dongle` and `/dev/pelta-hid-usb`. The daemon checks every few seconds which one is present and switches automatically, preferring the cable when both are connected. This includes the headset's mode switch: with both the dongle and cable connected, switching to 2.4 GHz removes the headset's USB device, so the daemon falls back to the dongle, and switching back brings the USB connection back within a few seconds. The settings window's title and the tray tooltip show the current connection (**ROG Pelta 2.4GHz** or **ROG Pelta USB**), and `pelta-ctl status` prints it.
 
+The **2.4 GHz quality** setting is handled by the dongle and only applies in 2.4 GHz mode. The tray's Connection section is disabled in USB-C mode; `pelta-ctl quality` still requires the dongle.
+
 ## Files
 
 | Installed to | What it is |
@@ -111,7 +118,7 @@ Each connection gets its own device: `/dev/pelta-hid-dongle` and `/dev/pelta-hid
 | `~/.local/share/applications/pelta-tray.desktop` | App launcher entry |
 | `~/.config/autostart/pelta-tray.desktop` | Starts the tray app at login |
 
-Runtime files: `$XDG_RUNTIME_DIR/pelta.json` (current status, written by the daemon), `~/.cache/pelta-battery` (last known level), `~/.config/pelta/settings.json` (last-set lighting and mic settings).
+Runtime files: `$XDG_RUNTIME_DIR/pelta.json` (current status, written by the daemon), `~/.cache/pelta-battery` (last known level), `~/.config/pelta/settings.json` (last-set lighting, mic and 2.4 GHz quality settings).
 
 `tools/pelta-probe` isn't installed. It sends the headset's status queries and prints the raw replies, which is useful for working out new parts of the protocol.
 
@@ -214,6 +221,7 @@ A sleeping headset answers every query with `ff aa` in bytes 5–6. Querying `cc
 | `cc 51 37 00 00 <minutes> <alert %> <alert on>` | Sleep timer and low-battery alert (always set together) |
 | `cc 41 11 00 00 <0/1>` | Sidetone |
 | `cc 41 02 00 00 <0/1>` | Echo cancellation |
+| `cc 51 52 00 00 <0x28/0x64>` | 2.4 GHz link quality: `0x28` = fast (lower latency), `0x64` = high (higher quality). The dongle ACKs but does not echo the value |
 | `cc 41 03 00 00 <0/1>`, `cc 41 04 00 00 <10 bytes>` | Sent by Armoury Crate with its EQ presets (`0x0c` = flat band). No audible effect on Linux, so not implemented. Armoury Crate's EQ and virtual surround appear to be done in software on Windows |
 
 For EQ on Linux, use a system-wide equalizer such as JamesDSP or EasyEffects.
