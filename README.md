@@ -4,7 +4,8 @@ Linux tools for the **ASUS ROG Pelta** wireless headset, used with its 2.4 GHz U
 
 - **Fixes the volume bug.** On Linux the headset wakes from sleep at max volume no matter what the system volume is. A small background service catches every wake and puts the volume back.
 - **Battery in the system tray**, with a charging indicator, a low-battery notification and a "fully charged" notification.
-- **Settings without Armoury Crate**: RGB lighting, auto-sleep timer, low-battery warning level, sidetone, echo cancellation and 2.4 GHz link quality, from a settings window or the command line.
+- **Settings without Armoury Crate**: RGB lighting, auto-sleep timer, low-battery alert and spoken warning, sidetone on/off and volume, echo cancellation, voice prompt language and 2.4 GHz link quality, from a settings window or the command line.
+- **Firmware versions** of the headset and dongle.
 
 Everything runs as your normal user. Root is only needed once, to install a udev rule.
 
@@ -44,20 +45,21 @@ The tray icon shows the battery level in steps of 10%, with a plug badge while c
 
 | Section | What it does |
 |---|---|
-| Headset | Battery level and status (awake, asleep, charging) |
+| Headset | Battery level, status (awake, asleep, charging) and firmware versions |
 | Lighting | Mode (static, breathing, strobing, color cycle, off), color picker or preset swatches, brightness |
-| Power | Auto-sleep timer and low-battery warning level. Read from the headset each time the window opens, so it's greyed out while the headset is asleep |
-| Connection | 2.4 GHz link quality: **Fast** for lower latency, **High** for higher quality. Only available with the dongle |
-| Microphone | Sidetone (hear your own voice) and echo cancellation |
+| Power | Auto-sleep timer, low-battery alert level and spoken low-battery warning |
+| Audio | Sidetone on/off and volume, echo cancellation, voice prompt language |
+| Connection | 2.4 GHz link quality, from 1 (lowest latency) to 4 (highest quality). Only available with the dongle |
 
-Changes are sent to the headset as you make them. Closing the window hides it; the tray icon keeps running. If you quit the tray app, start it again from **ROG Pelta** in the app launcher.
+The window reads the current settings from the headset each time it opens, and again when the headset wakes or the connection changes, so it always shows what the headset actually has. While the headset is asleep, the settings are greyed out. Changes are sent to the headset as you make them. Closing the window hides it; the tray icon keeps running. If you quit the tray app, start it again from **ROG Pelta** in the app launcher.
 
 If KDE hides the icon in the tray's overflow area, right-click the tray → **Configure System Tray → Entries** and set the Pelta entry to **Always shown**.
 
 ### Command line: `pelta-ctl`
 
 ```
-pelta-ctl status                      # battery, sleep timer, low-battery alert, last-set settings
+pelta-ctl status                      # battery, firmware and every setting the headset reports
+pelta-ctl firmware                    # headset and dongle firmware versions
 
 pelta-ctl rgb static purple -b 100    # mode, color, brightness (0-100, default 50)
 pelta-ctl rgb breathing 00aaff        # hex colors work too
@@ -66,33 +68,40 @@ pelta-ctl rgb cycle -b 75             # color cycle ignores the color
 pelta-ctl off                         # lights off
 pelta-ctl colors                      # list color names
 
-pelta-ctl sleep 10                    # auto-sleep: never, 5, 10 or 15 minutes
-pelta-ctl alert 15                    # low-battery warning at 15% (5-50)
+pelta-ctl sleep 10                    # auto-sleep: never, 2, 3, 5, 10 or 15 minutes
+pelta-ctl alert 20                    # low-battery alert at 20% (5-50; ASUS offers 10-50 in steps of 10)
 pelta-ctl alert off
+pelta-ctl alert-voice off             # spoken low-battery warning on / off
 
 pelta-ctl sidetone on                 # on / off
+pelta-ctl sidetone 6                  # sidetone volume 0-20 (default 10)
 pelta-ctl echo-cancel on              # on / off
+pelta-ctl voice english               # voice prompts: english, chinese or tones
 
-pelta-ctl quality fast                # 2.4 GHz quality: fast (lower latency) or high (higher quality)
-pelta-ctl latency fast                # alias for quality
-pelta-ctl quality status              # last value set with pelta-ctl
+pelta-ctl quality fast                # 2.4 GHz quality: fast, high, or level 1-4 (1 = lowest latency)
+pelta-ctl latency 2                   # alias for quality
+pelta-ctl quality status              # read the current level from the dongle
 ```
 
 **Color names:** red, orange, amber, yellow, lime, green, mint, cyan, sky, blue, purple, violet, magenta, pink, white. They aren't case-sensitive. Some are adjusted for LEDs, which make mixed colors look more yellow than a screen does (orange is `ff4000`, for example).
 
 **Lighting** commands set everything at once: anything you leave out goes back to its default. `pelta-ctl rgb static green` sets brightness to 50 even if it was at 100.
 
-**Sleep timer and alert** are read back from the headset after each change, so the command tells you if the headset didn't take it. Both need the headset to be awake.
+**Sleep timer, alert and quality** are read back after each change, so the command tells you if the headset didn't take it. Settings need the headset to be awake.
+
+**Sidetone and static:** sidetone feeds the mic straight into your ears, so a cheap or noisy mic can hiss. Lowering the sidetone volume (`pelta-ctl sidetone 5`, for example) reduces it.
 
 ### What `status` can and can't read
 
-The headset reports its **battery level, charging state, sleep timer and low-battery alert** when asked. It has no way to report **lighting, sidetone, echo cancellation or 2.4 GHz quality**, so `pelta-ctl` and the settings window remember the last values you set in `~/.config/pelta/settings.json`. Those will be wrong if something else changes the headset (Armoury Crate on another PC, for example).
+The headset reports almost everything when asked: battery, charging, firmware versions, sleep timer, low-battery alert and spoken warning, lighting, sidetone and its volume, voice prompt language, and (through the dongle) the 2.4 GHz quality. So `status` and the settings window show the real values, even if something else changed them.
+
+The one exception is **echo cancellation**, which the headset can't report. `pelta-ctl` and the settings window remember the last value they set in `~/.config/pelta/settings.json`.
 
 ### Battery and notifications
 
 The `pelta-wake` service reads the battery level when it starts, every time the headset wakes, and whenever the headset reports a change. It sends a desktop notification:
 
-- when the battery drops to the headset's low-battery warning level (set with `pelta-ctl alert` or the settings window; no notification if the alert is off)
+- when the battery drops to the headset's low-battery alert level (set with `pelta-ctl alert` or the settings window; no notification if the alert is off)
 - when charging reaches 100%
 
 While the headset is asleep or off, the tray shows the last known level, marked **last known** in the tooltip.
@@ -118,7 +127,7 @@ The **2.4 GHz quality** setting is handled by the dongle and only applies in 2.4
 | `~/.local/share/applications/pelta-tray.desktop` | App launcher entry |
 | `~/.config/autostart/pelta-tray.desktop` | Starts the tray app at login |
 
-Runtime files: `$XDG_RUNTIME_DIR/pelta.json` (current status, written by the daemon), `~/.cache/pelta-battery` (last known level), `~/.config/pelta/settings.json` (last-set lighting, mic and 2.4 GHz quality settings).
+Runtime files: `$XDG_RUNTIME_DIR/pelta.json` (current status, written by the daemon), `~/.cache/pelta-battery` (last known level), `~/.config/pelta/settings.json` (last-set echo cancellation).
 
 `tools/pelta-probe` isn't installed. It sends the headset's status queries and prints the raw replies, which is useful for working out new parts of the protocol.
 
@@ -152,7 +161,7 @@ Nothing in the tools is Arch-specific. The installer detects your package manage
 
 ASUS's web app [Gear Link](https://gearlink.asus.com/en) can also configure the Pelta and shows its firmware version. It works on Linux in Chromium-based browsers (Edge, Chrome and similar; tested in Edge on CachyOS), but not in Firefox, which doesn't support WebHID. The browser needs read/write access to the headset's HID device, which the udev rule from this project provides.
 
-Settings changed in Gear Link aren't seen by `pelta-ctl` or the settings window, which show the last values *they* set. Gear Link's firmware update downloads a Windows tool (`ROG Firmware Update Tool.exe`), so firmware updates still need Windows.
+Settings changed in Gear Link show up in `pelta-ctl status` and the settings window too, since both read them from the headset (except echo cancellation). Gear Link's firmware update downloads a Windows tool (`ROG Firmware Update Tool.exe`), so firmware updates still need Windows.
 
 ## Troubleshooting
 
@@ -194,9 +203,11 @@ Switching PipeWire to software volume (`api.alsa.soft-mixer`) avoids the bug, bu
 
 The dongle reports headset events as HID input reports on its vendor interface (interface 3, report ID `0xCC`). The headset has the same interface when connected by cable. The daemon reads that device directly, which needs no root, no usbmon and no polling. The udev rule gives that interface a fixed name, so it doesn't matter which `hidrawN` number or USB port it gets.
 
+Switching the headset off and on (or through USB mode and back) also resets it to max volume, but sends no report. So while it's on the dongle, the daemon asks the dongle every 3 seconds whether the headset is connected (`cc 12 00 00 01`, answered by the dongle itself) and runs the volume fix when the answer changes from "not connected" to "connected".
+
 ### Protocol
 
-Everything goes through report ID `0xCC`, 64 bytes, in both directions. Commands from the computer are HID output reports (`SET_REPORT`). These were worked out from the dongle's HID descriptor and USB captures of Armoury Crate on Windows.
+Everything goes through report ID `0xCC`, 64 bytes, in both directions. Commands from the computer are HID output reports (`SET_REPORT`). Byte 1 is the command (`12` get, `51` set, `41` audio set, `61` audio level set), byte 2 the setting, bytes 3–4 an index, and data starts at byte 5. These were worked out from the dongle's HID descriptor and USB captures of Armoury Crate, and confirmed against the command table in ASUS Gear Link.
 
 **Sent by the headset on its own**
 
@@ -212,10 +223,17 @@ Everything goes through report ID `0xCC`, 64 bytes, in both directions. Commands
 
 | Query | Reply |
 |---|---|
-| `cc 12 00 00 01` | Dongle: byte 5 `1` = headset connected, all zeros = asleep. Cable: byte 5 is `0` followed by other data (`07 00 04` on the tested unit, possibly a version) |
+| `cc 12 00 00 00` | Firmware: bytes 5–8 headset, bytes 9–12 dongle, each least-significant first (`00 07 00 04` = 4.0.7.0). The dongle part is zero over the cable |
+| `cc 12 00 00 01` | Dongle: byte 5 `1` = headset connected, all zeros = asleep. Cable: byte 5 is `0` followed by the headset firmware |
+| `cc 12 07` | byte 5: sleep timer (minutes, 0 = never), byte 6: battery %, byte 7: low-battery alert % (0 = off), byte 8: spoken low-battery warning on/off |
 | `cc 12 08` | byte 5: `1` = charging |
-| `cc 12 07` | byte 5: sleep timer (minutes, 0 = never), byte 6: battery %, byte 7: alert level %, byte 8: alert on/off |
-| `cc 12 13`, `cc 12 18` | Sent by Armoury Crate; meaning unknown (not surround, sidetone or mic state as far as tested) |
+| `cc 12 03` | Lighting: mode, brightness, R, G, B |
+| `cc 12 13` | Lights on/off |
+| `cc 12 24` / `cc 12 19` | Sidetone on/off / sidetone volume (0–20) |
+| `cc 12 28` | Voice prompts: 1 English, 2 Chinese, 0 tones only |
+| `cc 12 52` | 2.4 GHz quality (40, 60, 80 or 100); dongle only |
+| `cc 12 0e` | Power-saving (sleep) state |
+| `cc 12 18` | Demo mode |
 
 A sleeping headset answers every query with `ff aa` in bytes 5–6. Querying `cc 12 09` (the battery push type) isn't supported and also returns `ff aa`.
 
@@ -224,11 +242,15 @@ A sleeping headset answers every query with `ff aa` in bytes 5–6. Querying `cc
 | Command | Meaning |
 |---|---|
 | `cc 51 28 00 00 <mode> <brightness> <R> <G> <B>` | Lighting. Mode 1 static, 2 breathing, 3 strobing, 4 color cycle. Brightness 0–100 |
-| `cc 51 37 00 00 <minutes> <alert %> <alert on>` | Sleep timer and low-battery alert (always set together) |
-| `cc 41 11 00 00 <0/1>` | Sidetone |
+| `cc 51 37 00 00 <minutes> <alert %> <voice>` | Sleep timer, low-battery alert level (0 = off) and spoken warning, always set together |
+| `cc 41 11 00 00 <0/1>` | Sidetone on/off |
+| `cc 61 11 00 00 <0–20>` | Sidetone volume |
+| `cc 41 0a 00 00 <1/2/0>` | Voice prompts: English, Chinese, tones only |
 | `cc 41 02 00 00 <0/1>` | Echo cancellation |
-| `cc 51 52 00 00 <0x28/0x64>` | 2.4 GHz link quality: `0x28` = fast (lower latency), `0x64` = high (higher quality). The dongle ACKs but does not echo the value |
-| `cc 41 03 00 00 <0/1>`, `cc 41 04 00 00 <10 bytes>` | Sent by Armoury Crate with its EQ presets (`0x0c` = flat band). No audible effect on Linux, so not implemented. Armoury Crate's EQ and virtual surround appear to be done in software on Windows |
+| `cc 51 52 00 00 <40/60/80/100>` | 2.4 GHz link quality, 40 = lowest latency ... 100 = highest quality; dongle only |
+| `cc 41 03 00 00 <0/1>`, `cc 41 04 00 00 <10 bytes>` | Sent by Armoury Crate with its EQ presets (`0x0c` = flat band). Gear Link lists these as a hardware EQ but marks it disabled for the Pelta, and they had no audible effect, so they're not implemented. Armoury Crate's EQ and virtual surround appear to be done in software on Windows |
+
+Gear Link also defines two reset commands (`cc 50 40`, `cc 50 60`), deliberately not implemented.
 
 For EQ on Linux, use a system-wide equalizer such as JamesDSP or EasyEffects.
 

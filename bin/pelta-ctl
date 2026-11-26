@@ -1,25 +1,34 @@
 #!/usr/bin/env python3
 """Control an ASUS ROG Pelta (2.4 GHz dongle or USB-C cable) through /dev/pelta-hid-usb or /dev/pelta-hid-dongle.
 
-Commands are copied byte-for-byte from what Armoury Crate sends on Windows.
-Every command is a 64-byte output report starting with report ID 0xCC.
+Every command is a 64-byte HID report with ID 0xCC: byte 1 is the command
+(0x12 = get, 0x51 = set, 0x41 = audio set, 0x61 = audio level set), byte 2
+the key, bytes 3-4 an index, data from byte 5. A get is answered with the
+same first three bytes; "ff aa" in bytes 5-6 means the headset couldn't
+answer (usually because it's asleep). The command table matches the one in
+ASUS Gear Link and what Armoury Crate sends.
 """
 import argparse, json, os, select, sys, time
 
 # Connections in order of preference (the cable wins if both are present).
 DEVICES = [("/dev/pelta-hid-usb", "USB"), ("/dev/pelta-hid-dongle", "2.4GHz")]
+DONGLE = "/dev/pelta-hid-dongle"   # 2.4 GHz quality is a dongle setting
 SAVED = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
                      "pelta", "settings.json")
 
-MODES = {"static": 1, "breathing": 2, "strobing": 3, "cycle": 4}
-QUALITY = {"fast": 0x28, "high": 0x64}
+GET, SET, AUDIO, AUDIO_LEVEL = 0x12, 0x51, 0x41, 0x61
 
-# Connection Priority/2.4GHz quality is a dongle setting; never send it over USB-C.
-DONGLE = "/dev/pelta-hid-dongle"
+MODES = {"static": 1, "breathing": 2, "strobing": 3, "cycle": 4}
+# 2.4 GHz link quality: level 1 = lowest latency ... level 4 = highest quality.
+QUALITY_LEVELS = {1: 40, 2: 60, 3: 80, 4: 100}
+QUALITY_NAMES = {"fast": 1, "high": 4}
+SLEEP_CHOICES = [0, 2, 3, 5, 10, 15]            # minutes, 0 = never
+VOICES = {"english": 1, "chinese": 2, "tones": 0}
 
 # Armoury Crate also sends cc 41 03 00 00 <0/1> and cc 41 04 00 00 <10 bands>
-# for its EQ presets, but neither had any audible effect on Linux, so they
-# are not offered here.
+# (hardware EQ), but they had no audible effect and Gear Link marks the EQ as
+# disabled for the Pelta, so they are not offered here. Gear Link also defines
+# reset commands (cc 50 40, cc 50 60), deliberately left out.
 
 
 def connection():
@@ -43,11 +52,14 @@ def dongle():
     return DONGLE
 
 
+def _report(payload):
+    return bytes(payload) + bytes(64 - len(payload))
+
+
 def send_to(path, payload):
-    pkt = bytes(payload) + bytes(64 - len(payload))
     fd = os.open(path, os.O_RDWR)
     try:
-        os.write(fd, pkt)
+        os.write(fd, _report(payload))
     finally:
         os.close(fd)
 
@@ -56,58 +68,130 @@ def send(payload):
     send_to(device(), payload)
 
 
-def read_settings():
-    """Ask the headset for its settings; returns (sleep_min, battery, alert_pct, alert_on)."""
-    fd = os.open(device(), os.O_RDWR)
+def get(key, index=(0, 0), path=None, timeout=2):
+    """Send a get for `key`; return the 64-byte reply. Exits if asleep or no reply."""
+    fd = os.open(path or device(), os.O_RDWR)
     try:
         while select.select([fd], [], [], 0)[0]:
             os.read(fd, 256)
-        os.write(fd, bytes.fromhex("cc1207") + bytes(61))
-        end = time.time() + 2
+        os.write(fd, _report([0xCC, GET, key, *index]))
+        end = time.time() + timeout
         while (left := end - time.time()) > 0:
             if not select.select([fd], [], [], left)[0]:
                 break
             r = os.read(fd, 256)
-            if r[:3] == b"\xcc\x12\x07":
+            if r[:5] == bytes([0xCC, GET, key, *index]):
                 if r[5:7] == b"\xff\xaa":
                     sys.exit("pelta-ctl: headset is asleep or off; wake it and retry")
-                return r[5], r[6], r[7], r[8]
+                return r
     finally:
         os.close(fd)
     sys.exit("pelta-ctl: no reply from headset")
 
 
-def write_power(sleep_min, alert_pct, alert_on):
-    send([0xCC, 0x51, 0x37, 0, 0, sleep_min, alert_pct, alert_on])
+# ---- reading ---------------------------------------------------------------
+
+def read_settings():
+    """Return (sleep_min, battery, alert_pct, alert_voice); alert_pct 0 = off."""
+    r = get(0x07)
+    return r[5], r[6], r[7], r[8]
+
+
+def _version(b):
+    return None if not any(b) else ".".join(str(x) for x in reversed(b))
+
+
+def read_firmware():
+    """Return (headset, dongle) firmware versions as strings, or None if not reported."""
+    r = get(0x00)
+    return _version(r[5:9]), _version(r[9:13])
+
+
+def read_quality():
+    """Return the 2.4 GHz quality level 1-4 (from the dongle)."""
+    value = get(0x52, path=dongle())[5]
+    return min(QUALITY_LEVELS, key=lambda lvl: abs(QUALITY_LEVELS[lvl] - value))
+
+
+def read_sidetone():
+    """Return (on, volume 0-20)."""
+    return bool(get(0x24)[5]), get(0x19)[5]
+
+
+def read_lighting():
+    """Return {"mode", "brightness", "color"} or "off"."""
+    on = get(0x13)[5]
+    r = get(0x03)
+    mode = next((m for m, v in MODES.items() if v == r[5]), "static")
+    if not on or r[6] == 0:
+        return "off"
+    return {"mode": mode, "brightness": r[6], "color": r[7:10].hex()}
+
+
+def read_voice():
+    v = get(0x28)[5]
+    return next((n for n, x in VOICES.items() if x == v), str(v))
+
+
+def read_all():
+    """Everything the headset can report. Exits if it's asleep."""
+    sleep_min, battery, alert, alert_voice = read_settings()
+    info = {"sleep": sleep_min, "battery": battery, "alert": alert,
+            "alert_voice": bool(alert_voice), "firmware": read_firmware(),
+            "sidetone": read_sidetone(), "lighting": read_lighting(),
+            "voice": read_voice(), "quality": None}
+    if connection()[1] == "2.4GHz":
+        info["quality"] = read_quality()
+    return info
+
+
+# ---- writing ---------------------------------------------------------------
+
+def write_power(sleep_min, alert_pct, alert_voice):
+    """Sleep timer, low-battery alert level (0 = off) and voice warning, set together."""
+    send([0xCC, SET, 0x37, 0, 0, sleep_min, alert_pct, int(alert_voice)])
     time.sleep(0.3)
     got = read_settings()
-    if (got[0], got[2], got[3]) != (sleep_min, alert_pct, alert_on):
+    if (got[0], got[2], got[3]) != (sleep_min, alert_pct, int(alert_voice)):
         sys.exit(f"pelta-ctl: headset did not accept it (now reports {got})")
 
 
-def write_quality(mode):
-    """Set the 2.4GHz link quality; the dongle ACKs but does not echo the value."""
+def write_quality(level):
+    """Set the 2.4 GHz quality level 1-4 on the dongle and check it took."""
     path = dongle()
-    fd = os.open(path, os.O_RDWR)
-    try:
-        while select.select([fd], [], [], 0)[0]:
-            os.read(fd, 256)
-        payload = [0xCC, 0x51, 0x52, 0, 0, QUALITY[mode]]
-        os.write(fd, bytes(payload) + bytes(64 - len(payload)))
-        end = time.time() + 1
-        while (left := end - time.time()) > 0:
-            if not select.select([fd], [], [], left)[0]:
-                break
-            r = os.read(fd, 256)
-            if r[:3] == b"\xcc\x51\x52":
-                if r[5:7] == b"\xff\xaa":
-                    sys.exit("pelta-ctl: dongle did not accept it; wake the headset and retry")
-                remember(quality=mode)
-                return
-    finally:
-        os.close(fd)
-    sys.exit("pelta-ctl: no reply from the dongle; wake the headset and retry")
+    send_to(path, [0xCC, SET, 0x52, 0, 0, QUALITY_LEVELS[level]])
+    time.sleep(0.3)
+    got = get(0x52, path=path)[5]
+    if got != QUALITY_LEVELS[level]:
+        sys.exit(f"pelta-ctl: dongle did not accept it (now reports {got})")
 
+
+def write_sidetone(on):
+    send([0xCC, AUDIO, 0x11, 0, 0, int(on)])
+
+
+def write_sidetone_volume(volume):
+    send([0xCC, AUDIO_LEVEL, 0x11, 0, 0, volume])
+
+
+def write_echo_cancel(on):
+    send([0xCC, AUDIO, 0x02, 0, 0, int(on)])
+    remember(echo_cancel=bool(on))      # the headset can't report this one
+
+
+def write_voice(name):
+    send([0xCC, AUDIO, 0x0A, 0, 0, VOICES[name]])
+
+
+def write_lighting(mode, brightness, color):
+    send([0xCC, SET, 0x28, 0, 0, MODES[mode], brightness, *color])
+
+
+def lighting_off():
+    send([0xCC, SET, 0x28, 0, 0, 1, 0, 0, 0, 0xFF])
+
+
+# ---- saved settings (only echo cancellation can't be read back) ----------
 
 def load_saved():
     try:
@@ -124,6 +208,8 @@ def remember(**kv):
     with open(SAVED, "w") as f:
         json.dump(data, f, indent=2)
 
+
+# ---- command line ----------------------------------------------------------
 
 COLORS = {
     "red": "ff0000", "orange": "ff4000", "amber": "ff8000", "yellow": "ffff00",
@@ -164,6 +250,16 @@ def on_off(s):
     return 1 if s == "on" else 0
 
 
+def quality_name(level):
+    return {1: "1 (fast)", 4: "4 (high)"}.get(level, str(level))
+
+
+def describe_lighting(light):
+    if light == "off":
+        return "off"
+    return f"{light['mode']} {color_name(light['color'])} at {light['brightness']}%"
+
+
 def main():
     p = argparse.ArgumentParser(prog="pelta-ctl")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -175,80 +271,99 @@ def main():
     r.add_argument("-b", "--brightness", type=pct, default=50,
                    help="0-100, default 50 (0 = lights off)")
 
-    o = sub.add_parser("off", help="turn lighting off")
-
+    sub.add_parser("off", help="turn lighting off")
     sub.add_parser("colors", help="list color names")
 
     s = sub.add_parser("sleep", help="auto-sleep timer")
-    s.add_argument("minutes", choices=["never", "5", "10", "15"])
+    s.add_argument("minutes", choices=["never"] + [str(m) for m in SLEEP_CHOICES if m])
 
     l = sub.add_parser("alert", help="low-battery warning level")
     l.add_argument("level", help="percent (5-50) or off")
 
-    sub.add_parser("status", help="show battery and settings")
+    v = sub.add_parser("alert-voice", help="spoken warning when the battery is low")
+    v.add_argument("state", type=on_off)
+
+    sub.add_parser("status", help="show battery, firmware and settings")
+    sub.add_parser("firmware", help="show headset and dongle firmware versions")
 
     q = sub.add_parser("quality", aliases=["latency"],
-                       help="2.4GHz quality (fast = lower latency, high = higher quality)")
-    q.add_argument("mode", choices=["fast", "high", "status"])
+                       help="2.4GHz quality: fast, high, or level 1-4 (1 = lowest latency)")
+    q.add_argument("level", choices=["fast", "high", "1", "2", "3", "4", "status"])
 
-    t = sub.add_parser("sidetone", help="hear your own mic")
-    t.add_argument("state", type=on_off)
+    t = sub.add_parser("sidetone", help="hear your own mic: on, off, or volume 0-20")
+    t.add_argument("value")
 
     e = sub.add_parser("echo-cancel", help="mic echo cancellation")
     e.add_argument("state", type=on_off)
 
+    vp = sub.add_parser("voice", help="voice prompt language")
+    vp.add_argument("language", choices=VOICES)
+
     a = p.parse_args()
 
     if a.cmd == "rgb":
-        send([0xCC, 0x51, 0x28, 0, 0, MODES[a.mode], a.brightness, *a.color])
-        remember(rgb={"mode": a.mode, "color": a.color.hex(), "brightness": a.brightness})
+        write_lighting(a.mode, a.brightness, a.color)
     elif a.cmd == "off":
-        send([0xCC, 0x51, 0x28, 0, 0, 1, 0, 0, 0, 0xFF])
-        remember(rgb="off")
+        lighting_off()
     elif a.cmd == "sleep":
         mins = 0 if a.minutes == "never" else int(a.minutes)
-        _, _, alert, on = read_settings()       # keep the alert as it is
-        write_power(mins, alert, on)
+        _, _, alert, voice = read_settings()     # keep the alert as it is
+        write_power(mins, alert, voice)
     elif a.cmd == "alert":
-        sleep_min, _, alert, _ = read_settings()
+        sleep_min, _, _, voice = read_settings()
         if a.level == "off":
-            write_power(sleep_min, alert, 0)
+            write_power(sleep_min, 0, voice)
         else:
             lvl = int(a.level)
             if not 5 <= lvl <= 50:
                 sys.exit("pelta-ctl: alert level must be 5-50 or off")
-            write_power(sleep_min, lvl, 1)
+            write_power(sleep_min, lvl, voice)
+    elif a.cmd == "alert-voice":
+        sleep_min, _, alert, _ = read_settings()
+        write_power(sleep_min, alert, a.state)
     elif a.cmd == "status":
-        sleep_min, batt, alert, on = read_settings()
-        print(f"connection  {connection()[1]}")
-        print(f"battery     {batt}%")
-        print(f"sleep timer {'never' if sleep_min == 0 else f'{sleep_min} min'}")
-        print(f"low alert   {f'{alert}%' if on else 'off'}")
-        saved = load_saved()
+        info = read_all()
+        fw_h, fw_d = info["firmware"]
+        side_on, side_vol = info["sidetone"]
         onoff = lambda v: "unknown" if v is None else ("on" if v else "off")
-        rgb = saved.get("rgb")
-        if isinstance(rgb, dict):
-            rgb = f"{rgb['mode']} {color_name(rgb['color'])} at {rgb['brightness']}%"
-        print("\nlast set with pelta-ctl (the headset can't be asked for these):")
-        print(f"lighting    {rgb or 'unknown'}")
-        print(f"sidetone    {onoff(saved.get('sidetone'))}")
-        print(f"echo cancel {onoff(saved.get('echo_cancel'))}")
-        print(f"quality     {saved.get('quality') or 'unknown'}")
+        print(f"connection  {connection()[1]}")
+        print(f"battery     {info['battery']}%")
+        print(f"firmware    headset {fw_h or 'unknown'}"
+              + (f", dongle {fw_d}" if fw_d else ""))
+        print(f"sleep timer {'never' if info['sleep'] == 0 else str(info['sleep']) + ' min'}")
+        print(f"low alert   {str(info['alert']) + '%' if info['alert'] else 'off'}"
+              f" (voice warning {onoff(info['alert_voice'])})")
+        print(f"lighting    {describe_lighting(info['lighting'])}")
+        print(f"sidetone    {onoff(side_on)}, volume {side_vol}/20")
+        print(f"voice       {info['voice']}")
+        if info["quality"] is not None:
+            print(f"quality     {quality_name(info['quality'])}")
+        print(f"echo cancel {onoff(load_saved().get('echo_cancel'))}"
+              " (last set with pelta-ctl; the headset can't report it)")
+    elif a.cmd == "firmware":
+        fw_h, fw_d = read_firmware()
+        print(f"headset {fw_h or 'unknown'}")
+        if fw_d:
+            print(f"dongle  {fw_d}")
     elif a.cmd in ("quality", "latency"):
-        if a.mode == "status":
-            print(f"2.4GHz quality {load_saved().get('quality') or 'unknown'} "
-                  "(last set with pelta-ctl)")
+        if a.level == "status":
+            print(f"2.4GHz quality {quality_name(read_quality())}")
         else:
-            write_quality(a.mode)
+            write_quality(QUALITY_NAMES.get(a.level) or int(a.level))
     elif a.cmd == "colors":
         for n, h in COLORS.items():
             print(f"{n:<8} {h}")
     elif a.cmd == "sidetone":
-        send([0xCC, 0x41, 0x11, 0, 0, a.state])
-        remember(sidetone=bool(a.state))
+        if a.value in ("on", "off"):
+            write_sidetone(a.value == "on")
+        elif a.value.isdigit() and 0 <= int(a.value) <= 20:
+            write_sidetone_volume(int(a.value))
+        else:
+            sys.exit("pelta-ctl: sidetone takes on, off, or a volume 0-20")
     elif a.cmd == "echo-cancel":
-        send([0xCC, 0x41, 0x02, 0, 0, a.state])
-        remember(echo_cancel=bool(a.state))
+        write_echo_cancel(a.state)
+    elif a.cmd == "voice":
+        write_voice(a.language)
 
 
 if __name__ == "__main__":

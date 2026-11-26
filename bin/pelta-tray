@@ -13,7 +13,7 @@ from PyQt6.QtGui import QAction, QColor, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QMenu, QProgressBar, QPushButton, QSlider,
-    QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget,
+    QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 STATE_FILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "pelta.json")
@@ -30,7 +30,11 @@ def load_ctl():
 
 ctl = load_ctl()
 
-SLEEP_CHOICES = [("Never", 0), ("5 min", 5), ("10 min", 10), ("15 min", 15)]
+SLEEP_CHOICES = [("Never", 0), ("2 min", 2), ("3 min", 3), ("5 min", 5),
+                 ("10 min", 10), ("15 min", 15)]
+ALERT_CHOICES = [("Off", 0), ("10%", 10), ("20%", 20), ("30%", 30), ("40%", 40), ("50%", 50)]
+QUALITY_CHOICES = ["1 – Fast (lowest latency)", "2", "3", "4 – High quality"]
+VOICE_CHOICES = [("English", "english"), ("Chinese", "chinese"), ("Tones only", "tones")]
 
 
 def read_state():
@@ -52,12 +56,18 @@ def run(fn, *args):
         return e.strerror
 
 
+def combo(items):
+    c = QComboBox()
+    c.addItems(items)
+    return c
+
+
 class Window(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ROG Pelta")
         self.setWindowIcon(QIcon.fromTheme("audio-headset"))
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(380)
         root = QVBoxLayout(self)
 
         # --- headset status -------------------------------------------------
@@ -66,16 +76,17 @@ class Window(QWidget):
         self.battery = QProgressBar()
         self.battery.setRange(0, 100)
         self.status = QLabel()
+        self.firmware = QLabel("–")
         form.addRow("Battery", self.battery)
         form.addRow("Status", self.status)
+        form.addRow("Firmware", self.firmware)
         root.addWidget(box)
 
         # --- lighting -------------------------------------------------------
-        box = QGroupBox("Lighting")
-        form = QFormLayout(box)
+        self.light_box = QGroupBox("Lighting")
+        form = QFormLayout(self.light_box)
 
-        self.mode = QComboBox()
-        self.mode.addItems([m.capitalize() for m in ctl.MODES] + ["Off"])
+        self.mode = combo([m.capitalize() for m in ctl.MODES] + ["Off"])
         self.mode.currentIndexChanged.connect(self.lighting_changed)
         form.addRow("Mode", self.mode)
 
@@ -107,7 +118,7 @@ class Window(QWidget):
         row.addWidget(self.bright)
         row.addWidget(self.bright_lbl)
         form.addRow("Brightness", row)
-        root.addWidget(box)
+        root.addWidget(self.light_box)
 
         # Sliders and swatches fire rapidly; send only after a short pause.
         self.light_timer = QTimer(self, singleShot=True, interval=250)
@@ -116,57 +127,60 @@ class Window(QWidget):
         # --- power ----------------------------------------------------------
         self.power_box = QGroupBox("Power")
         form = QFormLayout(self.power_box)
-        self.sleep = QComboBox()
-        for label, _ in SLEEP_CHOICES:
-            self.sleep.addItem(label)
+        self.sleep = combo([label for label, _ in SLEEP_CHOICES])
         self.sleep.currentIndexChanged.connect(self.apply_power)
         form.addRow("Auto sleep", self.sleep)
-
-        row = QHBoxLayout()
-        self.alert_on = QCheckBox("Warn at")
-        self.alert = QSpinBox()
-        self.alert.setRange(5, 50)
-        self.alert.setSuffix(" %")
-        self.alert_on.toggled.connect(self.apply_power)
-        self.power_timer = QTimer(self, singleShot=True, interval=700)
-        self.power_timer.timeout.connect(self.apply_power)
-        self.alert.valueChanged.connect(lambda _: self.power_timer.start())
-        row.addWidget(self.alert_on)
-        row.addWidget(self.alert)
-        row.addStretch()
-        form.addRow("Low battery", row)
+        self.alert = combo([label for label, _ in ALERT_CHOICES])
+        self.alert.currentIndexChanged.connect(self.apply_power)
+        form.addRow("Low battery alert", self.alert)
+        self.alert_voice = QCheckBox("Spoken low-battery warning")
+        self.alert_voice.toggled.connect(self.apply_power)
+        form.addRow("", self.alert_voice)
         root.addWidget(self.power_box)
+
+        # --- audio ----------------------------------------------------------
+        self.audio_box = QGroupBox("Audio")
+        form = QFormLayout(self.audio_box)
+        self.sidetone = QCheckBox("Hear your own voice")
+        self.sidetone.toggled.connect(self.apply_sidetone)
+        form.addRow("Sidetone", self.sidetone)
+        row = QHBoxLayout()
+        self.side_vol = QSlider(Qt.Orientation.Horizontal)
+        self.side_vol.setRange(0, 20)
+        self.side_vol_lbl = QLabel()
+        self.side_vol_lbl.setMinimumWidth(36)
+        self.side_vol.valueChanged.connect(self.side_vol_changed)
+        row.addWidget(self.side_vol)
+        row.addWidget(self.side_vol_lbl)
+        form.addRow("Sidetone volume", row)
+        self.side_timer = QTimer(self, singleShot=True, interval=250)
+        self.side_timer.timeout.connect(self.apply_side_vol)
+        self.echo = QCheckBox("Echo cancellation")
+        self.echo.setToolTip("The headset can't report this, so it shows the last value set here")
+        self.echo.toggled.connect(self.apply_echo)
+        form.addRow("Microphone", self.echo)
+        self.voice = combo([label for label, _ in VOICE_CHOICES])
+        self.voice.currentIndexChanged.connect(self.apply_voice)
+        form.addRow("Voice prompts", self.voice)
+        root.addWidget(self.audio_box)
 
         # --- connection -----------------------------------------------------
         self.conn_box = QGroupBox("Connection")
         form = QFormLayout(self.conn_box)
-        self.quality = QComboBox()
-        self.quality.addItems(["Fast", "High"])
-        self.quality.setPlaceholderText("Unknown")   # shown until a value is set
-        self.quality.setToolTip("Fast favors lower latency; High favors link quality")
+        self.quality = combo(QUALITY_CHOICES)
+        self.quality.setToolTip("Lower levels reduce latency; higher levels favor link quality")
         self.quality.currentIndexChanged.connect(self.apply_quality)
         form.addRow("2.4 GHz quality", self.quality)
         root.addWidget(self.conn_box)
-
-        # --- microphone -----------------------------------------------------
-        box = QGroupBox("Microphone")
-        col = QVBoxLayout(box)
-        self.sidetone = QCheckBox("Sidetone (hear your own voice)")
-        self.echo = QCheckBox("Echo cancellation")
-        self.sidetone.toggled.connect(
-            lambda on: self.mic_cmd([0xCC, 0x41, 0x11, 0, 0, int(on)], sidetone=on))
-        self.echo.toggled.connect(
-            lambda on: self.mic_cmd([0xCC, 0x41, 0x02, 0, 0, int(on)], echo_cancel=on))
-        col.addWidget(self.sidetone)
-        col.addWidget(self.echo)
-        root.addWidget(box)
 
         self.msg = QLabel()
         self.msg.setWordWrap(True)
         root.addWidget(self.msg)
 
         self.loading = False
-        self.power = None          # (sleep, alert, on) last read from headset
+        self.info = None           # everything last read from the headset
+        self.power = None          # (sleep, alert, voice) as the headset has it
+        self.mode_name = None      # "USB" / "2.4GHz" / None
 
     # ---- loading ------------------------------------------------------------
     def showEvent(self, event):
@@ -178,53 +192,87 @@ class Window(QWidget):
         self.hide()
 
     def load(self):
-        self.loading = True
         self.msg.clear()
-        saved = ctl.load_saved()
-
-        rgb = saved.get("rgb")
-        if rgb == "off":
-            self.mode.setCurrentText("Off")
-        elif isinstance(rgb, dict):
-            self.mode.setCurrentText(rgb["mode"].capitalize())
-            self.color = QColor("#" + rgb["color"])
-            self.bright.setValue(rgb["brightness"])
-        else:
-            self.bright.setValue(50)
-        self.sidetone.setChecked(bool(saved.get("sidetone")))
-        self.echo.setChecked(bool(saved.get("echo_cancel")))
-        self.show_saved_quality(saved)
-        self.update_lighting_widgets()
-
-        self.load_power()
-        self.loading = False
+        self.mode_name = read_state().get("mode")
+        self.load_device()
         self.refresh_status()
 
-    def load_power(self):
-        """Read sleep timer and alert from the headset; disable the box if asleep."""
+    def device_boxes(self):
+        return (self.light_box, self.power_box, self.audio_box)
+
+    def load_device(self):
+        """Read every setting from the headset; disable the controls if it's asleep."""
         was_loading, self.loading = self.loading, True
-        self.power = None
         holder = {}
-        err = run(lambda: holder.update(v=ctl.read_settings()))
+        err = run(lambda: holder.update(v=ctl.read_all()))
         if err:
-            self.set_power_asleep()
+            self.set_asleep()
         else:
-            sleep_min, _, alert, on = holder["v"]
-            self.power = (sleep_min, alert, on)
-            self.power_box.setEnabled(True)
-            self.power_box.setTitle("Power")
-            values = [v for _, v in SLEEP_CHOICES]
-            if sleep_min in values:
-                self.sleep.setCurrentIndex(values.index(sleep_min))
-            self.alert.setValue(min(max(alert, 5), 50))
-            self.alert_on.setChecked(bool(on))
-            self.alert.setEnabled(bool(on))
+            self.show_info(holder["v"])
         self.loading = was_loading
 
-    def set_power_asleep(self):
-        self.power = None
-        self.power_box.setEnabled(False)
+    def show_info(self, info):
+        self.info = info
+        for box in self.device_boxes():
+            box.setEnabled(True)
+        self.light_box.setTitle("Lighting")
+        self.power_box.setTitle("Power")
+        self.audio_box.setTitle("Audio")
+
+        fw_h, fw_d = info["firmware"]
+        self.firmware.setText(f"headset {fw_h or '?'}" + (f", dongle {fw_d}" if fw_d else ""))
+
+        light = info["lighting"]
+        if light == "off":
+            self.mode.setCurrentText("Off")
+        else:
+            self.mode.setCurrentText(light["mode"].capitalize())
+            self.color = QColor("#" + light["color"])
+            self.bright.setValue(light["brightness"])
+        self.update_lighting_widgets()
+
+        self.power = (info["sleep"], info["alert"], int(info["alert_voice"]))
+        self.select(self.sleep, SLEEP_CHOICES, info["sleep"], f"{info['sleep']} min")
+        self.select(self.alert, ALERT_CHOICES, info["alert"], f"{info['alert']}%")
+        self.alert_voice.setChecked(info["alert_voice"])
+
+        on, vol = info["sidetone"]
+        self.sidetone.setChecked(on)
+        self.side_vol.setValue(vol)
+        self.side_vol_lbl.setText(str(vol))
+        self.echo.setChecked(bool(ctl.load_saved().get("echo_cancel")))
+        names = [n for _, n in VOICE_CHOICES]
+        if info["voice"] in names:
+            self.voice.setCurrentIndex(names.index(info["voice"]))
+
+        if info["quality"]:
+            self.quality.setCurrentIndex(info["quality"] - 1)
+        self.update_conn_box()
+
+    @staticmethod
+    def select(box, choices, value, label):
+        """Select `value` in a combo, adding it if the headset has a non-standard one."""
+        values = [v for _, v in choices]
+        if value not in values:
+            choices.append((label, value))
+            box.addItem(label)
+            values.append(value)
+        box.setCurrentIndex(values.index(value))
+
+    def set_asleep(self):
+        self.info = self.power = None
+        for box in self.device_boxes():
+            box.setEnabled(False)
+        self.light_box.setTitle("Lighting (wake the headset to change)")
         self.power_box.setTitle("Power (wake the headset to change)")
+        self.audio_box.setTitle("Audio (wake the headset to change)")
+        self.update_conn_box()
+
+    def update_conn_box(self):
+        ok = self.mode_name == "2.4GHz" and self.info is not None
+        self.conn_box.setEnabled(ok)
+        self.conn_box.setTitle("Connection" if self.mode_name == "2.4GHz"
+                               else "Connection (2.4 GHz only)")
 
     def refresh_status(self):
         s = read_state()
@@ -247,15 +295,17 @@ class Window(QWidget):
         if s.get("charging"):
             parts.append("charging")
         self.status.setText(", ".join(parts) or "unknown")
-        self.conn_box.setEnabled(mode == "2.4GHz")
-        self.conn_box.setTitle("Connection" if mode == "2.4GHz"
-                               else "Connection (2.4 GHz only)")
 
-        # Follow wake/sleep while the window is open.
-        if s.get("awake") and self.power is None and not self.loading:
-            self.load_power()
-        elif (s.get("awake") is False or not mode) and self.power is not None:
-            self.set_power_asleep()
+        # Follow wake/sleep and connection changes while the window is open.
+        changed = mode != self.mode_name
+        self.mode_name = mode
+        if self.loading:
+            return
+        if s.get("awake") and (self.info is None or changed):
+            self.load_device()
+        elif (s.get("awake") is False or not mode) and self.info is not None:
+            self.set_asleep()
+        self.update_conn_box()
 
     # ---- lighting -----------------------------------------------------------
     def update_lighting_widgets(self):
@@ -285,59 +335,62 @@ class Window(QWidget):
     def apply_lighting(self):
         mode = self.mode.currentText().lower()
         if mode == "off":
-            err = run(ctl.send, [0xCC, 0x51, 0x28, 0, 0, 1, 0, 0, 0, 0xFF])
-            if not err:
-                ctl.remember(rgb="off")
+            err = run(ctl.lighting_off)
         else:
             rgb = bytes([self.color.red(), self.color.green(), self.color.blue()])
-            b = self.bright.value()
-            err = run(ctl.send, [0xCC, 0x51, 0x28, 0, 0, ctl.MODES[mode], b, *rgb])
-            if not err:
-                ctl.remember(rgb={"mode": mode, "color": rgb.hex(), "brightness": b})
+            err = run(ctl.write_lighting, mode, self.bright.value(), rgb)
         self.msg.setText(err or "")
 
     # ---- power --------------------------------------------------------------
     def apply_power(self):
-        self.alert.setEnabled(self.alert_on.isChecked())
         if self.loading or self.power is None:
             return
         want = (SLEEP_CHOICES[self.sleep.currentIndex()][1],
-                self.alert.value(), int(self.alert_on.isChecked()))
+                ALERT_CHOICES[self.alert.currentIndex()][1],
+                int(self.alert_voice.isChecked()))
         if want == self.power:
             return
         err = run(ctl.write_power, *want)
         if err:
             self.msg.setText(err)
-            self.load()                 # show what the headset really has
+            self.load_device()          # show what the headset really has
         else:
             self.power = want
             self.msg.clear()
 
+    # ---- audio --------------------------------------------------------------
+    def apply_sidetone(self, on):
+        if not self.loading:
+            self.msg.setText(run(ctl.write_sidetone, on) or "")
+
+    def side_vol_changed(self, value):
+        self.side_vol_lbl.setText(str(value))
+        if not self.loading:
+            self.side_timer.start()
+
+    def apply_side_vol(self):
+        self.msg.setText(run(ctl.write_sidetone_volume, self.side_vol.value()) or "")
+
+    def apply_echo(self, on):
+        if not self.loading:
+            self.msg.setText(run(ctl.write_echo_cancel, on) or "")
+
+    def apply_voice(self, index):
+        if not self.loading and index >= 0:
+            self.msg.setText(run(ctl.write_voice, VOICE_CHOICES[index][1]) or "")
+
     # ---- connection ---------------------------------------------------------
-    def show_saved_quality(self, saved=None):
-        """Show the last value set, or "Unknown" if it was never set."""
-        saved = ctl.load_saved() if saved is None else saved
+    def apply_quality(self, index):
+        if self.loading or index < 0 or self.info is None:
+            return
+        err = run(ctl.write_quality, index + 1)
+        self.msg.setText(err or "")
         was_loading, self.loading = self.loading, True
-        self.quality.setCurrentIndex({"fast": 0, "high": 1}.get(saved.get("quality"), -1))
+        if err and self.info.get("quality"):
+            self.quality.setCurrentIndex(self.info["quality"] - 1)   # show what it has
+        elif not err:
+            self.info["quality"] = index + 1
         self.loading = was_loading
-
-    def apply_quality(self):
-        if self.loading or self.quality.currentIndex() < 0:
-            return
-        mode = "fast" if self.quality.currentIndex() == 0 else "high"
-        err = run(ctl.write_quality, mode)
-        self.msg.setText(err or "")
-        if err:
-            self.show_saved_quality()      # the dongle didn't take it; show what it has
-
-    # ---- microphone ---------------------------------------------------------
-    def mic_cmd(self, payload, **saved):
-        if self.loading:
-            return
-        err = run(ctl.send, payload)
-        if not err:
-            ctl.remember(**saved)
-        self.msg.setText(err or "")
 
 
 def main():
