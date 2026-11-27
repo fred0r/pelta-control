@@ -5,7 +5,7 @@ Linux tools for the **ASUS ROG Pelta** wireless headset, used with its 2.4 GHz U
 - **Fixes the volume bug.** On Linux the headset wakes from sleep at max volume no matter what the system volume is. A small background service catches every wake and puts the volume back.
 - **Battery in the system tray**, with a charging indicator, a low-battery notification and a "fully charged" notification.
 - **Settings without Armoury Crate**: RGB lighting, auto-sleep timer, low-battery alert and spoken warning, sidetone on/off and volume, echo cancellation, voice prompt language and 2.4 GHz link quality, from a settings window or the command line.
-- **Firmware versions** of the headset and dongle.
+- **Firmware versions** of the headset and dongle, with an on-demand check for updates.
 
 Everything runs as your normal user. Root is only needed once, to install a udev rule.
 
@@ -45,7 +45,7 @@ The tray icon shows the battery level in steps of 10%, with a plug badge while c
 
 | Section | What it does |
 |---|---|
-| Headset | Battery level, status (awake, asleep, charging) and firmware versions |
+| Headset | Battery level, status (awake, asleep, charging), firmware versions and a **Check for updates** button |
 | Lighting | Mode (static, breathing, strobing, color cycle, off), color picker or preset swatches, brightness |
 | Power | Auto-sleep timer, low-battery alert level and spoken low-battery warning |
 | Audio | Sidetone on/off and volume, echo cancellation, voice prompt language |
@@ -60,6 +60,7 @@ If KDE hides the icon in the tray's overflow area, right-click the tray → **Co
 ```
 pelta-ctl status                      # battery, firmware and every setting the headset reports
 pelta-ctl firmware                    # headset and dongle firmware versions
+pelta-ctl firmware --check            # compare with the latest firmware from ASUS
 
 pelta-ctl rgb static purple -b 100    # mode, color, brightness (0-100, default 50)
 pelta-ctl rgb breathing 00aaff        # hex colors work too
@@ -162,6 +163,8 @@ Nothing in the tools is Arch-specific. The installer detects your package manage
 ASUS's web app [Gear Link](https://gearlink.asus.com/en) can also configure the Pelta and shows its firmware version. It works on Linux in Chromium-based browsers (Edge, Chrome and similar; tested in Edge on CachyOS), but not in Firefox, which doesn't support WebHID. The browser needs read/write access to the headset's HID device, which the udev rule from this project provides.
 
 Settings changed in Gear Link show up in `pelta-ctl status` and the settings window too, since both read them from the headset (except echo cancellation). Gear Link's firmware update downloads a Windows tool (`ROG Firmware Update Tool.exe`), so firmware updates still need Windows.
+
+**Checking for updates:** `pelta-ctl firmware --check` and the settings window's **Check for updates** button read the latest version from the same file Gear Link uses (`https://gearlink.asus.com/firmware-update-tools/7044/windows/manifest.json`) and compare it with your headset and dongle. This is the only time the tools contact anything online, and only when you ask. It's an unofficial use of an ASUS file, so it may stop working if ASUS changes it.
 
 ## Troubleshooting
 

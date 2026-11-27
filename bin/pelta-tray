@@ -77,9 +77,15 @@ class Window(QWidget):
         self.battery.setRange(0, 100)
         self.status = QLabel()
         self.firmware = QLabel("–")
+        self.update_btn = QPushButton("Check for updates")
+        self.update_btn.setToolTip("Compare with the latest firmware from ASUS (contacts gearlink.asus.com)")
+        self.update_btn.clicked.connect(self.check_updates)
+        fw_row = QHBoxLayout()
+        fw_row.addWidget(self.firmware, 1)
+        fw_row.addWidget(self.update_btn)
         form.addRow("Battery", self.battery)
         form.addRow("Status", self.status)
-        form.addRow("Firmware", self.firmware)
+        form.addRow("Firmware", fw_row)
         root.addWidget(box)
 
         # --- lighting -------------------------------------------------------
@@ -306,6 +312,24 @@ class Window(QWidget):
         elif (s.get("awake") is False or not mode) and self.info is not None:
             self.set_asleep()
         self.update_conn_box()
+
+    # ---- firmware -----------------------------------------------------------
+    def check_updates(self):
+        self.update_btn.setEnabled(False)
+        self.msg.setText("Checking with ASUS…")
+        QApplication.processEvents()
+        holder = {}
+        err = run(lambda: holder.update(v=ctl.check_updates()))
+        self.update_btn.setEnabled(True)
+        if err:
+            self.msg.setText(err)
+            return
+        newer = [f"{part} {latest}" for part, _, latest, new in holder["v"] if new]
+        if newer:
+            self.msg.setText(f"Firmware update available ({', '.join(newer)}). "
+                             f"Install it from Windows with ASUS Gear Link: {ctl.GEARLINK}")
+        else:
+            self.msg.setText("Firmware is up to date.")
 
     # ---- lighting -----------------------------------------------------------
     def update_lighting_widgets(self):
