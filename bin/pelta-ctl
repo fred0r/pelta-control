@@ -18,6 +18,11 @@ SAVED = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.co
 
 GET, SET, AUDIO, AUDIO_LEVEL = 0x12, 0x51, 0x41, 0x61
 
+# Latest firmware, as published for ASUS Gear Link (7044 = the dongle's
+# product ID). Only fetched when the user asks for an update check.
+UPDATE_MANIFEST = "https://gearlink.asus.com/firmware-update-tools/7044/windows/manifest.json"
+GEARLINK = "https://gearlink.asus.com/en"
+
 MODES = {"static": 1, "breathing": 2, "strobing": 3, "cycle": 4}
 # 2.4 GHz link quality: level 1 = lowest latency ... level 4 = highest quality.
 QUALITY_LEVELS = {1: 40, 2: 60, 3: 80, 4: 100}
@@ -105,6 +110,40 @@ def read_firmware():
     """Return (headset, dongle) firmware versions as strings, or None if not reported."""
     r = get(0x00)
     return _version(r[5:9]), _version(r[9:13])
+
+
+def _vtuple(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def check_updates(timeout=8):
+    """Compare the headset's firmware with the latest from ASUS.
+
+    Returns [(part, installed, latest, update_available)]. Contacts
+    gearlink.asus.com, so only call this when the user asks.
+    """
+    import urllib.request
+    fw_h, fw_d = read_firmware()
+    req = urllib.request.Request(UPDATE_MANIFEST, headers={
+        "User-Agent": "pelta-control (https://github.com/jimm0thy/pelta-control)"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            manifest = json.load(resp)
+    except Exception as err:
+        sys.exit(f"pelta-ctl: couldn't get the latest version from ASUS ({err})")
+    result = []
+    for part, have, key in (("headset", fw_h, "deviceFWVersion"),
+                            ("dongle", fw_d, "dongleFWVersion")):
+        latest = manifest.get(key) or None
+        if have and latest:
+            try:
+                newer = _vtuple(latest) > _vtuple(have)
+            except ValueError:
+                newer = latest != have
+            result.append((part, have, latest, newer))
+    if not result:
+        sys.exit("pelta-ctl: ASUS didn't list a firmware version to compare with")
+    return result
 
 
 def read_quality():
@@ -284,7 +323,9 @@ def main():
     v.add_argument("state", type=on_off)
 
     sub.add_parser("status", help="show battery, firmware and settings")
-    sub.add_parser("firmware", help="show headset and dongle firmware versions")
+    fw = sub.add_parser("firmware", help="show headset and dongle firmware versions")
+    fw.add_argument("--check", action="store_true",
+                    help="compare with the latest version from ASUS (contacts gearlink.asus.com)")
 
     q = sub.add_parser("quality", aliases=["latency"],
                        help="2.4GHz quality: fast, high, or level 1-4 (1 = lowest latency)")
@@ -340,6 +381,12 @@ def main():
             print(f"quality     {quality_name(info['quality'])}")
         print(f"echo cancel {onoff(load_saved().get('echo_cancel'))}"
               " (last set with pelta-ctl; the headset can't report it)")
+    elif a.cmd == "firmware" and a.check:
+        result = check_updates()
+        for part, have, latest, newer in result:
+            print(f"{part:<8}{have}  (latest {latest}{', update available' if newer else ', up to date'})")
+        if any(newer for *_, newer in result):
+            print(f"\nUpdate from Windows with ASUS Gear Link: {GEARLINK}")
     elif a.cmd == "firmware":
         fw_h, fw_d = read_firmware()
         print(f"headset {fw_h or 'unknown'}")
