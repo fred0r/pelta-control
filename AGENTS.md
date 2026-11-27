@@ -23,7 +23,8 @@ Linux tools for the ASUS ROG Pelta headset (2.4 GHz dongle `0b05:1b84`, USB-C `0
 ## Rules
 
 - **Only send commands that are known**: from Armoury Crate captures or the command table in ASUS Gear Link. Don't guess bytes on the set commands (`51`, `41`, `61`); an unknown set can change an unrelated setting.
-- **Never add** the reset commands (`cc 50 40`, `cc 50 60`) or firmware flashing.
+- **Don't add firmware flashing or `resetDevice` (`cc 50 60`).** Their effects are unknown and can't be read back; a full device reset may clear the headset–dongle pairing.
+- **`resetDefault` (`cc 50 40`)** probably restores factory settings, like Gear Link's reset button. Add it only after a person has confirmed on a real headset what that button resets, and behind a confirmation prompt.
 - After a write that can be read back, read it back and report a mismatch (see `write_power`, `write_quality`).
 - Keep everything as standalone Python 3 with the standard library only (PyQt6 for the tray). No new dependencies, no build step.
 - New headset commands go into `pelta-ctl` first; the tray calls them through `run()`.
